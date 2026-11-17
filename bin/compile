@@ -50,14 +50,15 @@ read_env() {
 # Configuration
 # ---------------------------------------------------------------------------
 
-# Version de PHP installée par le buildpack PHP Scalingo. Elle remplace la
-# contrainte du composer.json de Moodle (ex: ">=8.3.0"), sans borne haute, qui
-# ferait passer sur toute nouvelle version de PHP proposée par Scalingo.
-# À vérifier à chaque montée de version de Moodle :
-# https://moodledev.io/general/development/policies/php
-PHP_VERSION_CONSTRAINT="~8.4.0"
-
 read_env MOODLE_VERSION
+
+# Version de PHP installée par le buildpack PHP Scalingo, surchargeable par la
+# variable MOODLE_PHP_VERSION. Elle remplace la contrainte du composer.json de
+# Moodle (ex: ">=8.3.0"), sans borne haute, qui ferait passer sur toute
+# nouvelle version de PHP proposée par Scalingo.
+# Défaut à vérifier à chaque montée de version de Moodle :
+# https://moodledev.io/general/development/policies/php
+read_env MOODLE_PHP_VERSION "~8.4.0"
 read_env MOODLE_UPLOAD_MAX_FILESIZE "64M"
 read_env MOODLE_OBJECTFS_VERSION "v2026041013"
 
@@ -185,11 +186,11 @@ cp -a "$BP_DIR/frameworks/moodle" "$BUILD_DIR/$framework"
 cp -a "$BP_DIR/conf/nginx/moodle.conf.erb" "$BUILD_DIR/.moodle-buildpack/conf/nginx/"
 
 status "Configuring composer.json for the PHP buildpack"
-info "PHP version: $PHP_VERSION_CONSTRAINT"
+info "PHP version: $MOODLE_PHP_VERSION"
 
 composer_tmp="$(mktemp)"
 jq \
-  --arg php "$PHP_VERSION_CONSTRAINT" \
+  --arg php "$MOODLE_PHP_VERSION" \
   --arg framework "$framework" \
   --arg upload "$MOODLE_UPLOAD_MAX_FILESIZE" \
   '
