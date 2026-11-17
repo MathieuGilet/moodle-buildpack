@@ -56,7 +56,6 @@ Seules les variables fournies par les addons Scalingo sont utilisées :
 |---|---|
 | `SCALINGO_POSTGRESQL_URL` | Obligatoire (addon PostgreSQL). |
 | `SCALINGO_REDIS_URL` | Si présente (addon Redis), les sessions sont stockées dans Redis. |
-| `MOODLE_DB_PREFIX` | Préfixe des tables (défaut `mdl_`). |
 
 ### Stockage S3 (Scaleway)
 

@@ -23,7 +23,7 @@ push_to_s3() {
 }
 
 # Moodle est installé si sa table "config" existe.
-config_table="${MOODLE_DB_PREFIX:-mdl_}config"
+config_table="mdl_config"
 if ! installed="$(psql "$SCALINGO_POSTGRESQL_URL" --no-psqlrc --tuples-only --no-align \
                     --command "SELECT to_regclass('${config_table}') IS NOT NULL")"; then
   echo " !     Unable to query the database" >&2
