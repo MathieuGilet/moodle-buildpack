@@ -82,7 +82,6 @@ Les fichiers ne sont jamais supprimés du bucket par Moodle.
 | `MOODLE_DEBUG` | `false` | Active le mode `DEBUG_DEVELOPER`. |
 | `MOODLE_SMTP_HOST` | — | `hôte:port` SMTP ; avec `MOODLE_SMTP_USER`, `MOODLE_SMTP_PASSWORD`, `MOODLE_SMTP_SECURE` (`tls`/`ssl`), `MOODLE_SMTP_AUTH_TYPE`. |
 | `MOODLE_NOREPLY_ADDRESS` | — | Adresse « noreply ». |
-| `MOODLE_CRON_IN_WEB` | `true` | Lance le cron Moodle dans le conteneur web. |
 | `MOODLE_CRON_INTERVAL` | `60` | Secondes entre deux exécutions du cron. |
 | `MOODLE_CRON_START_DELAY` | `30` | Délai (s) avant le premier cron / envoi S3 après le démarrage. |
 | `MOODLE_S3_PUSH_INTERVAL` | `60` | Secondes entre deux envois des nouveaux fichiers vers S3. |

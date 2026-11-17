@@ -65,10 +65,8 @@ shutdown() {
 }
 trap shutdown TERM INT
 
-if [ "${MOODLE_CRON_IN_WEB:-true}" = "true" ]; then
-  cron_loop &
-  loops+=($!)
-fi
+cron_loop &
+loops+=($!)
 
 if [ -n "${MOODLE_S3_BUCKET:-}" ]; then
   s3_push_loop &
