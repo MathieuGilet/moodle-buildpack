@@ -44,7 +44,6 @@ déploiements suivants, il lance `admin/cli/upgrade.php`.
 | Variable | Défaut | Description |
 |---|---|---|
 | `MOODLE_VERSION` | — (obligatoire) | Tag, branche ou SHA Git de Moodle. Les tags et SHA sont mis en cache. |
-| `MOODLE_PHP_VERSION` | `~8.4.0` | Contrainte de version PHP. |
 | `MOODLE_OBJECTFS_VERSION` | `v2026041013` | Version (ref Git) du plugin [`tool_objectfs`](https://github.com/catalyst/moodle-tool_objectfs). |
 | `MOODLE_UPLOAD_MAX_FILESIZE` | `64M` | `upload_max_filesize` / `post_max_size` (Nginx limite à 75 Mo). |
 
@@ -161,7 +160,26 @@ est affiché s'ils remplacent un fichier de Moodle.
 | `scripts/moodle-web` | Process `web` : Nginx + PHP-FPM, cron Moodle et envoi des fichiers vers S3. |
 
 Le buildpack modifie le `composer.json` de Moodle pour fixer la version de PHP
-et ajouter la section `extra.paas` ; Composer affiche donc un avertissement
+(`~8.4.0`, soit la dernière 8.4.x, définie par `PHP_VERSION_CONSTRAINT` dans
+`bin/compile`) et ajouter la section `extra.paas` ; Composer affiche donc un avertissement
 « lock file is not up to date », sans conséquence. Il supprime aussi le
 `package.json` de Moodle (outillage de développement) pour que le buildpack PHP
 n'installe pas Node.js.
+
+## Version de PHP
+
+La version de PHP est figée à `~8.4.0` par la constante `PHP_VERSION_CONSTRAINT`
+de `bin/compile`. Elle remplace la contrainte du `composer.json` de Moodle
+(`>=8.3.0` en 5.3), qui n'indique qu'un minimum : sans borne haute, un
+redéploiement pourrait passer sur une version de PHP que Moodle ne supporte pas
+encore.
+
+- Les versions correctives (8.4.x), dont les correctifs de sécurité, sont
+  installées automatiquement à chaque déploiement.
+- Le passage à une nouvelle branche de PHP (8.5…) est manuel.
+
+> **À chaque montée de version de Moodle** (`MOODLE_VERSION`), vérifiez les
+> versions de PHP supportées dans la
+> [politique PHP de Moodle](https://moodledev.io/general/development/policies/php)
+> et ajustez `PHP_VERSION_CONSTRAINT` si besoin. PHP 8.4 reçoit des correctifs
+> de sécurité jusqu'à fin 2028.
