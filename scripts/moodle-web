@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# Process "web" : Nginx + PHP-FPM (bin/run du buildpack PHP), et en tâche de
+# fond :
+#   - le cron Moodle, toutes les MOODLE_CRON_INTERVAL secondes ;
+#   - si le stockage S3 est activé, l'envoi des nouveaux fichiers vers S3
+#     (tâche push_objects_to_storage de tool_objectfs), toutes les
+#     MOODLE_S3_PUSH_INTERVAL secondes, indépendamment du cron pour qu'une
+#     tâche Moodle longue ne retarde pas l'envoi.
+# À l'arrêt du conteneur (SIGTERM), un dernier envoi vers S3 est tenté.
+#
+# Moodle est toujours installé quand ce process démarre : le postdeploy
+# (bin/moodle-postdeploy) s'exécute avant le démarrage des nouveaux conteneurs
+# et fait échouer le déploiement si l'installation échoue.
+
+cd /app || exit 1
+mkdir -p /app/moodledata
+
+run_task() {
+  php admin/cli/scheduled_task.php --execute="$1" 2>&1 | sed "s/^/[$2] /"
+}
+
+cron_loop() {
+  sleep "${MOODLE_CRON_START_DELAY:-30}"
+  while true; do
+    php admin/cli/cron.php --keep-alive=0 2>&1 | sed 's/^/[moodle-cron] /'
+    sleep "${MOODLE_CRON_INTERVAL:-60}"
+  done
+}
+
+s3_push_loop() {
+  sleep "${MOODLE_CRON_START_DELAY:-30}"
+  while true; do
+    run_task '\tool_objectfs\task\push_objects_to_storage' moodle-s3
+    # Récupère les fichiers marqués en erreur par un autre conteneur
+    # (ex: postdeploy) alors qu'ils sont présents ici.
+    run_task '\tool_objectfs\task\recover_error_objects' moodle-s3
+    sleep "${MOODLE_S3_PUSH_INTERVAL:-60}"
+  done
+}
+
+loops=()
+
+stop_all() {
+  # Boucles en tâche de fond (et leurs processus PHP en cours)
+  for pid in "${loops[@]}"; do
+    pkill -TERM -P "$pid" 2>/dev/null
+    kill -TERM "$pid" 2>/dev/null
+  done
+  # Nginx : bin/run est lancé dans son propre groupe de processus
+  kill -TERM -- "-$web_pid" 2>/dev/null
+  # PHP-FPM crée sa propre session et n'est donc pas dans ce groupe
+  pkill -TERM -f '^php-fpm: master' 2>/dev/null
+}
+
+shutdown() {
+  trap - TERM INT
+  if [ -n "${MOODLE_S3_BUCKET:-}" ]; then
+    echo "[moodle-s3] Shutting down: pushing pending files to S3"
+    timeout "${MOODLE_S3_SHUTDOWN_TIMEOUT:-20}" \
+      php admin/cli/scheduled_task.php --execute='\tool_objectfs\task\push_objects_to_storage' 2>&1 \
+      | sed 's/^/[moodle-s3] /'
+  fi
+  stop_all
+  exit 0
+}
+trap shutdown TERM INT
+
+if [ "${MOODLE_CRON_IN_WEB:-true}" = "true" ]; then
+  cron_loop &
+  loops+=($!)
+fi
+
+if [ -n "${MOODLE_S3_BUCKET:-}" ]; then
+  s3_push_loop &
+  loops+=($!)
+fi
+
+setsid /app/bin/run &
+web_pid=$!
+
+wait "$web_pid"
+rc=$?
+stop_all
+exit "$rc"

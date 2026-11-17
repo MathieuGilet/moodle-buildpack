@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# À déclarer dans le Procfile : `postdeploy: bin/moodle-postdeploy`
+#
+# - Base vide        -> installation de Moodle (admin/cli/install_database.php)
+# - Base existante   -> mise à jour (admin/cli/upgrade.php)
+#
+# Le postdeploy tourne dans un conteneur éphémère : si le stockage S3 est
+# activé, les fichiers créés pendant l'installation / la mise à jour sont
+# envoyés sur S3 avant la fin du script.
+
+set -uo pipefail
+cd /app
+
+mkdir -p /app/moodledata
+
+push_to_s3() {
+  [ -n "${MOODLE_S3_BUCKET:-}" ] || return 0
+  echo "-----> Pushing files created during postdeploy to S3"
+  # Référence dans tool_objectfs les fichiers créés avant son installation,
+  # puis envoie tous les fichiers locaux sur S3.
+  php admin/cli/scheduled_task.php --execute='\tool_objectfs\task\check_objects_location' || return 1
+  php admin/cli/scheduled_task.php --execute='\tool_objectfs\task\push_objects_to_storage' || return 1
+}
+
+# Moodle est installé si sa table "config" existe.
+config_table="${MOODLE_DB_PREFIX:-mdl_}config"
+if ! installed="$(psql "$SCALINGO_POSTGRESQL_URL" --no-psqlrc --tuples-only --no-align \
+                    --command "SELECT to_regclass('${config_table}') IS NOT NULL")"; then
+  echo " !     Unable to query the database" >&2
+  exit 1
+fi
+
+if [ "$installed" = "t" ]; then
+  echo "-----> Moodle is installed, running upgrade"
+  php admin/cli/upgrade.php --non-interactive --allow-unstable || exit 1
+else
+  if [ -z "${MOODLE_ADMIN_PASSWORD:-}" ]; then
+    echo " !     MOODLE_ADMIN_PASSWORD must be defined to install Moodle" >&2
+    exit 1
+  fi
+  echo "-----> Installing Moodle database"
+  args=(
+    --agree-license
+    --lang="${MOODLE_LANG:-en}"
+    --adminuser="${MOODLE_ADMIN_USER:-admin}"
+    --adminpass="${MOODLE_ADMIN_PASSWORD}"
+    --fullname="${MOODLE_SITE_FULLNAME:-Moodle}"
+    --shortname="${MOODLE_SITE_SHORTNAME:-moodle}"
+  )
+  [ -n "${MOODLE_ADMIN_EMAIL:-}" ] && args+=(--adminemail="${MOODLE_ADMIN_EMAIL}")
+  [ -n "${MOODLE_SUPPORT_EMAIL:-}" ] && args+=(--supportemail="${MOODLE_SUPPORT_EMAIL}")
+  php admin/cli/install_database.php "${args[@]}" || exit 1
+fi
+
+push_to_s3 || { echo " !     Unable to push files to S3" >&2; exit 1; }

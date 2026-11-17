@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# "Framework" pour le buildpack PHP Scalingo : fournit la configuration Nginx
+# de Moodle. Il est référencé via extra.paas.framework dans composer.json.
+
+BUILD_DIR="$2"
+basedir="$(cd -P "$(dirname "$0")" && pwd)"
+
+case "$1" in
+  detect)
+    [ -f "$BUILD_DIR/public/lib/setup.php" ] && exit 0
+    exit 1
+    ;;
+  compile)
+    echo "-----> Setting up Moodle Nginx configuration"
+    cp "$basedir/../conf/nginx/moodle.conf.erb" "$BUILD_DIR/conf/site.conf.erb"
+    ;;
+esac
+
+exit 0

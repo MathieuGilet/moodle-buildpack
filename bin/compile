@@ -1,0 +1,219 @@
+#!/usr/bin/env bash
+# bin/compile <BUILD_DIR> <CACHE_DIR> <ENV_DIR>
+#
+# 1. Télécharge le code source de Moodle (MOODLE_VERSION)
+# 2. Applique les patchs de l'application (patches/*.patch)
+# 3. Installe le plugin tool_objectfs (stockage S3)
+# 4. Installe le config.php piloté par les variables d'environnement
+# 5. Superpose les fichiers de l'application (plugins, thèmes, ...)
+# 6. Prépare l'application pour le buildpack PHP Scalingo (composer.json,
+#    configuration Nginx, scripts)
+#
+# PHP, Nginx et Composer sont ensuite installés par le buildpack PHP Scalingo,
+# déclaré après celui-ci dans le fichier .buildpacks de l'application.
+#
+# Fichiers de l'application :
+#   patches/*.patch  appliqués sur le code de Moodle
+#   moodle/          copié par-dessus l'arborescence de Moodle
+#   tout le reste    copié à la racine (Procfile, config.local.php, ...), sauf
+#                    .git, .gitignore, .buildpacks et README.md
+
+set -euo pipefail
+shopt -s dotglob nullglob
+
+[ -n "${BUILDPACK_DEBUG:-}" ] && set -x
+
+BUILD_DIR="$1"
+CACHE_DIR="$2"
+ENV_DIR="$3"
+BP_DIR="$(cd -P "$(dirname "$0")/.." && pwd)"
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+status() { echo "-----> $*"; }
+info()   { echo "       $*"; }
+error()  { echo " !     $*" >&2; exit 1; }
+
+# Lit une variable depuis ENV_DIR (si elle n'est pas déjà définie)
+read_env() {
+  local name="$1" default="${2:-}"
+  if [ -z "${!name:-}" ] && [ -f "$ENV_DIR/$name" ]; then
+    export "$name=$(cat "$ENV_DIR/$name")"
+  fi
+  if [ -z "${!name:-}" ] && [ -n "$default" ]; then
+    export "$name=$default"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+read_env MOODLE_VERSION
+read_env MOODLE_PHP_VERSION "~8.4.0"
+read_env MOODLE_UPLOAD_MAX_FILESIZE "64M"
+read_env MOODLE_OBJECTFS_VERSION "v2026041013"
+
+if [ -z "${MOODLE_VERSION:-}" ]; then
+  error "La variable d'environnement MOODLE_VERSION est obligatoire.
+       Définissez-la avec un tag, une branche ou un SHA Git de Moodle
+       (ex: v5.3.0 ou MOODLE_503_STABLE)."
+fi
+
+moodle_archive_url="https://github.com/moodle/moodle/archive/${MOODLE_VERSION}.tar.gz"
+
+# ---------------------------------------------------------------------------
+# 1. Mise de côté des sources de l'application
+# ---------------------------------------------------------------------------
+APP_SRC="$(mktemp -d)"
+mv "$BUILD_DIR"/* "$APP_SRC"/ 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# 2. Téléchargement de Moodle
+# ---------------------------------------------------------------------------
+status "Installing Moodle ${MOODLE_VERSION}"
+
+MOODLE_CACHE_DIR="$CACHE_DIR/moodle"
+mkdir -p "$MOODLE_CACHE_DIR"
+archive="$MOODLE_CACHE_DIR/${MOODLE_VERSION}.tar.gz"
+
+# Seules les références immuables (tags vX.Y.Z et SHA) sont mises en cache :
+# une branche doit être retéléchargée à chaque build.
+cacheable=false
+if [[ "$MOODLE_VERSION" =~ ^v[0-9]+(\.[0-9]+)*$ ]] || [[ "$MOODLE_VERSION" =~ ^[0-9a-f]{40}$ ]]; then
+  cacheable=true
+fi
+
+if [ "$cacheable" = "true" ] && [ -f "$archive" ]; then
+  info "Using cached archive"
+else
+  # Nettoyage des anciennes archives
+  rm -f "$MOODLE_CACHE_DIR"/*.tar.gz
+  info "Downloading $moodle_archive_url"
+  curl --fail --silent --show-error --location --retry 3 -o "$archive.tmp" "$moodle_archive_url" \
+    || error "Impossible de télécharger $moodle_archive_url"
+  mv "$archive.tmp" "$archive"
+fi
+
+tar -xzf "$archive" -C "$BUILD_DIR" --strip-components=1
+[ "$cacheable" = "true" ] || rm -f "$archive"
+
+[ -f "$BUILD_DIR/composer.json" ] || error "L'archive téléchargée ne semble pas contenir Moodle (composer.json absent)."
+[ -d "$BUILD_DIR/public" ] || error "Ce buildpack nécessite Moodle >= 5.1 (répertoire public/ absent)."
+
+# ---------------------------------------------------------------------------
+# 3. Patchs
+# ---------------------------------------------------------------------------
+apply_patch() {
+  local patch_file="$1"
+  info "Applying $(basename "$patch_file")"
+  (cd "$BUILD_DIR" && git apply --verbose "$patch_file" 2>&1 | sed 's/^/         /') \
+    || error "Échec de l'application du patch $patch_file"
+}
+
+patches=()
+for p in "$APP_SRC"/patches/*.patch; do
+  patches+=("$p")
+done
+
+if [ "${#patches[@]}" -gt 0 ]; then
+  status "Applying patches"
+  for p in "${patches[@]}"; do
+    apply_patch "$p"
+  done
+fi
+
+# ---------------------------------------------------------------------------
+# 4. Plugin tool_objectfs (stockage S3)
+# ---------------------------------------------------------------------------
+status "Installing tool_objectfs ${MOODLE_OBJECTFS_VERSION}"
+objectfs_dir="$BUILD_DIR/public/admin/tool/objectfs"
+mkdir -p "$objectfs_dir"
+curl --fail --silent --show-error --location --retry 3 \
+  "https://github.com/catalyst/moodle-tool_objectfs/archive/${MOODLE_OBJECTFS_VERSION}.tar.gz" \
+  | tar -xz -C "$objectfs_dir" --strip-components=1 \
+  || error "Impossible de télécharger tool_objectfs ${MOODLE_OBJECTFS_VERSION}"
+
+# ---------------------------------------------------------------------------
+# 5. config.php + fichiers de l'application
+# ---------------------------------------------------------------------------
+status "Installing config.php"
+cp "$BP_DIR/conf/config.php" "$BUILD_DIR/config.php"
+
+status "Copying application files"
+for entry in "$APP_SRC"/*; do
+  name="$(basename "$entry")"
+  case "$name" in
+    # Fichiers propres au dépôt de déploiement, inutiles dans l'application
+    moodle|patches|.git|.gitignore|.buildpacks|README.md) continue ;;
+  esac
+  [ -e "$BUILD_DIR/$name" ] && info "Warning: $name overrides the Moodle file of the same name"
+  info "$name"
+  cp -a "$entry" "$BUILD_DIR/"
+done
+
+# Le répertoire moodle/ de l'application est superposé à l'arborescence Moodle
+# (plugins, thèmes, config.php personnalisé, ...)
+if [ -d "$APP_SRC/moodle" ]; then
+  status "Copying application files from moodle/ into Moodle tree"
+  cp -a "$APP_SRC/moodle/." "$BUILD_DIR/"
+fi
+rm -rf "$APP_SRC"
+
+# ---------------------------------------------------------------------------
+# 6. Préparation pour le buildpack PHP Scalingo
+# ---------------------------------------------------------------------------
+
+# Le package.json de Moodle ne sert qu'aux outils de développement (Grunt...) :
+# sans lui, le buildpack PHP n'installe pas Node.js et ses dépendances.
+rm -f "$BUILD_DIR/package.json" "$BUILD_DIR/npm-shrinkwrap.json"
+
+# Configuration Nginx de Moodle, sous forme de "framework" du buildpack PHP.
+# Elle est copiée dans l'application car le buildpack PHP s'exécute après
+# celui-ci ; le chemin, relatif à la racine de l'application, est résolu par
+# le buildpack PHP.
+framework=".moodle-buildpack/frameworks/moodle"
+mkdir -p "$BUILD_DIR/.moodle-buildpack/frameworks" "$BUILD_DIR/.moodle-buildpack/conf/nginx"
+cp -a "$BP_DIR/frameworks/moodle" "$BUILD_DIR/$framework"
+cp -a "$BP_DIR/conf/nginx/moodle.conf.erb" "$BUILD_DIR/.moodle-buildpack/conf/nginx/"
+
+status "Configuring composer.json for the PHP buildpack"
+info "PHP version: $MOODLE_PHP_VERSION"
+
+composer_tmp="$(mktemp)"
+jq \
+  --arg php "$MOODLE_PHP_VERSION" \
+  --arg framework "$framework" \
+  --arg upload "$MOODLE_UPLOAD_MAX_FILESIZE" \
+  '
+  .require.php = $php
+  | .extra = (.extra // {})
+  | .extra.paas = ((.extra.paas // {}) + {
+      "document-root": "public",
+      "index-document": "index.php",
+      "framework": $framework,
+      "php-config": [
+        "max_input_vars=5000",
+        "upload_max_filesize=\($upload)",
+        "post_max_size=\($upload)",
+        "max_execution_time=300",
+        "opcache.enable_cli=0",
+        "opcache.revalidate_freq=60",
+        "opcache.max_accelerated_files=20000"
+      ]
+    })
+  ' "$BUILD_DIR/composer.json" > "$composer_tmp"
+mv "$composer_tmp" "$BUILD_DIR/composer.json"
+
+# ---------------------------------------------------------------------------
+# 7. Scripts Moodle
+# ---------------------------------------------------------------------------
+status "Installing Moodle scripts"
+mkdir -p "$BUILD_DIR/bin"
+for script in "$BP_DIR"/scripts/*; do
+  cp "$script" "$BUILD_DIR/bin/"
+  chmod +x "$BUILD_DIR/bin/$(basename "$script")"
+  info "bin/$(basename "$script")"
+done
+
+status "Moodle is ready, PHP will be installed by the PHP buildpack"

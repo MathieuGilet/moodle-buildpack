@@ -1,0 +1,37 @@
+# Configuration Nginx de Moodle (>= 5.1, document root = public/)
+# Inspirée de https://docs.moodle.org/en/Nginx
+
+root /app/<%= ENV['DOCUMENT_ROOT'] %>;
+index index.php index.html;
+
+# Fichiers cachés (sauf .well-known)
+location ~ /\.(?!well-known/) {
+    deny all;
+    return 404;
+}
+
+# Fichiers internes qui ne doivent jamais être servis
+location ~ (/vendor/|/node_modules/|composer\.json|/readme|/README|readme\.txt|/upgrade\.txt|/UPGRADING\.md|db/install\.xml|/fixtures/|/behat/|phpunit\.xml|\.lock|environment\.xml) {
+    deny all;
+    return 404;
+}
+
+# PHP avec support des "slash arguments" (ex: /pluginfile.php/1/...)
+location ~ [^/]\.php(/|$) {
+    fastcgi_split_path_info ^(.+?\.php)(/.*)$;
+    if (!-f $document_root$fastcgi_script_name) {
+        return 404;
+    }
+
+    include fastcgi_params;
+    fastcgi_param PATH_INFO       $fastcgi_path_info;
+    fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+    fastcgi_index index.php;
+    fastcgi_read_timeout 300s;
+    fastcgi_pass php;
+}
+
+# Routeur Moodle ($CFG->routerconfigured = true)
+location / {
+    try_files $uri $uri/ /r.php$is_args$args;
+}

@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# bin/detect <BUILD_DIR>
+#
+# Ce buildpack est destiné à être utilisé explicitement (BUILDPACK_URL ou
+# fichier .buildpacks) : il accepte donc n'importe quelle application.
+
+echo "Moodle"
+exit 0
